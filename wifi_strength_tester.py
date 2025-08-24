@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Wi-Fi Strength Tester (Cross-Platform)
- - Linux: nmcli (preferred) or pywifi
- - Windows: pywifi
+ - Linux: nmcli (preferred)
+ - Windows: netsh wlan
  - Optional: wordlist brute-force mode (--bruteforce)
 """
 
@@ -80,44 +80,62 @@ def try_connect_nmcli(ssid: str, password: str, timeout: int = 20):
     except Exception as e:
         return False, str(e)
 
-def try_connect_pywifi(ssid: str, password: str, timeout: int = 20):
+def try_connect_windows_netsh(ssid: str, password: str, timeout: int = 20):
+    """
+    Attempt to connect to Wi-Fi on Windows using netsh wlan
+    """
     try:
-        import pywifi
-        from pywifi import const
+        # Create temporary profile XML
+        profile = f"""
+        <WLANProfile xmlns="http://www.microsoft.com/networking/WLAN/profile/v1">
+            <name>{ssid}</name>
+            <SSIDConfig>
+                <SSID>
+                    <name>{ssid}</name>
+                </SSID>
+            </SSIDConfig>
+            <connectionType>ESS</connectionType>
+            <connectionMode>auto</connectionMode>
+            <MSM>
+                <security>
+                    <authEncryption>
+                        <authentication>WPA2PSK</authentication>
+                        <encryption>AES</encryption>
+                        <useOneX>false</useOneX>
+                    </authEncryption>
+                    <sharedKey>
+                        <keyType>passPhrase</keyType>
+                        <protected>false</protected>
+                        <keyMaterial>{password}</keyMaterial>
+                    </sharedKey>
+                </security>
+            </MSM>
+        </WLANProfile>
+        """
+        profile_path = f"{ssid}.xml"
+        with open(profile_path, "w") as f:
+            f.write(profile)
+
+        # Add the profile
+        subprocess.run(["netsh", "wlan", "add", f"profile filename={profile_path}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        # Connect
+        proc = subprocess.run(["netsh", "wlan", "connect", f"name={ssid}"], capture_output=True, text=True)
+        os.remove(profile_path)
+        if "successfully" in proc.stdout.lower():
+            return True, f"Connected to {ssid} via netsh"
+        else:
+            return False, proc.stdout.strip()
     except Exception as e:
-        return False, f"pywifi not available: {e}"
-
-    wifi = pywifi.PyWiFi()
-    ifaces = wifi.interfaces()
-    if not ifaces:
-        return False, "No Wi-Fi interface found"
-    iface = ifaces[0]
-
-    profile = pywifi.Profile()
-    profile.ssid = ssid
-    profile.akm.append(const.AKM_TYPE_WPA2PSK)
-    profile.cipher = const.CIPHER_TYPE_CCMP
-    profile.auth = const.AUTH_ALG_OPEN
-    profile.key = password
-
-    iface.remove_all_network_profiles()
-    tmp_profile = iface.add_network_profile(profile)
-
-    iface.connect(tmp_profile)
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        if iface.status() == const.IFACE_CONNECTED:
-            return True, "Connected via pywifi"
-        time.sleep(1)
-    iface.disconnect()
-    return False, "Failed to connect with pywifi"
+        return False, str(e)
 
 def try_connect(ssid: str, password: str, timeout: int = 20):
     system = platform.system().lower()
     if system == "linux" and has_nmcli():
         return try_connect_nmcli(ssid, password, timeout)
+    elif system == "windows":
+        return try_connect_windows_netsh(ssid, password, timeout)
     else:
-        return try_connect_pywifi(ssid, password, timeout)
+        return False, f"No supported connection method for {system}"
 
 # ---------------- Wordlist Mode ----------------
 def run_wordlist(ssid: str, wordlist_path: str, timeout: int = 10, max_tries: int = None):
